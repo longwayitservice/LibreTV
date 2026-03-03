@@ -1,4 +1,4 @@
-const IMAGE_PROXY = "https://douban-img.hx307.workers.dev//?url=";
+const IMAGE_PROXY = "https://douban-img.hx307.workers.dev/?url=";
 // 豆瓣热门电影电视剧推荐功能
 
 // 豆瓣标签列表 - 修改为默认标签
