@@ -7,20 +7,21 @@ const MEDIA_FILE_EXTENSIONS = [
 ];
 const MEDIA_CONTENT_TYPES = ['video/', 'audio/', 'image/'];
 
+const DOUBAN_HOSTS = [
+    "movie.douban.com",
+    "img1.doubanio.com",
+    "img2.doubanio.com",
+    "img3.doubanio.com",
+    "img9.doubanio.com"
+];
+
 export async function onRequest(context) {
     const { request, env, waitUntil } = context;
     const url = new URL(request.url);
 
-    // ✅ 豆瓣白名单：?url= 参数形式，直接放行不鉴权
+    // 豆瓣白名单：?url= 参数形式，直接放行不鉴权
     const targetParam = url.searchParams.get("url");
     if (targetParam) {
-        const DOUBAN_HOSTS = [
-            "movie.douban.com",
-            "img1.doubanio.com",
-            "img2.doubanio.com",
-            "img3.doubanio.com",
-            "img9.doubanio.com"
-        ];
         try {
             const targetHost = new URL(targetParam).hostname;
             if (DOUBAN_HOSTS.includes(targetHost)) {
@@ -46,7 +47,33 @@ export async function onRequest(context) {
         }
     }
 
-    // 以下是原有鉴权逻辑
+    // 鉴权验证
+    async function validateAuth(req, environment) {
+        const reqUrl = new URL(req.url);
+        const authHash = reqUrl.searchParams.get('auth');
+        const timestamp = reqUrl.searchParams.get('t');
+        const serverPassword = environment.PASSWORD;
+        if (!serverPassword) {
+            console.error('服务器未设置 PASSWORD 环境变量');
+            return false;
+        }
+        try {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(serverPassword);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const serverPasswordHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            if (!authHash || authHash !== serverPasswordHash) return false;
+        } catch (error) {
+            return false;
+        }
+        if (timestamp) {
+            const now = Date.now();
+            if (now - parseInt(timestamp) > 10 * 60 * 1000) return false;
+        }
+        return true;
+    }
+
     const isValidAuth = await validateAuth(request, env);
     if (!isValidAuth) {
         return new Response(JSON.stringify({
@@ -79,32 +106,6 @@ export async function onRequest(context) {
         }
     } catch (e) {}
 
-    async function validateAuth(request, env) {
-        const url = new URL(request.url);
-        const authHash = url.searchParams.get('auth');
-        const timestamp = url.searchParams.get('t');
-        const serverPassword = env.PASSWORD;
-        if (!serverPassword) {
-            console.error('服务器未设置 PASSWORD 环境变量');
-            return false;
-        }
-        try {
-            const encoder = new TextEncoder();
-            const data = encoder.encode(serverPassword);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const serverPasswordHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            if (!authHash || authHash !== serverPasswordHash) return false;
-        } catch (error) {
-            return false;
-        }
-        if (timestamp) {
-            const now = Date.now();
-            if (now - parseInt(timestamp) > 10 * 60 * 1000) return false;
-        }
-        return true;
-    }
-
     function logDebug(message) {
         if (DEBUG_ENABLED) console.log(`[Proxy Func] ${message}`);
     }
@@ -127,7 +128,9 @@ export async function onRequest(context) {
         }
     }
 
-    function createResponse(body, status = 200, headers = {}) {
+    function createResponse(body, status, headers) {
+        status = status || 200;
+        headers = headers || {};
         const responseHeaders = new Headers(headers);
         responseHeaders.set("Access-Control-Allow-Origin", "*");
         responseHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
@@ -135,13 +138,13 @@ export async function onRequest(context) {
         if (request.method === "OPTIONS") {
             return new Response(null, { status: 204, headers: responseHeaders });
         }
-        return new Response(body, { status, headers: responseHeaders });
+        return new Response(body, { status: status, headers: responseHeaders });
     }
 
     function createM3u8Response(content) {
         return createResponse(content, 200, {
             "Content-Type": "application/vnd.apple.mpegurl",
-            "Cache-Control": `public, max-age=${CACHE_TTL}`
+            "Cache-Control": "public, max-age=" + CACHE_TTL
         });
     }
 
@@ -152,10 +155,10 @@ export async function onRequest(context) {
     function getBaseUrl(urlStr) {
         try {
             const parsedUrl = new URL(urlStr);
-            if (!parsedUrl.pathname || parsedUrl.pathname === '/') return `${parsedUrl.origin}/`;
+            if (!parsedUrl.pathname || parsedUrl.pathname === '/') return parsedUrl.origin + '/';
             const pathParts = parsedUrl.pathname.split('/');
             pathParts.pop();
-            return `${parsedUrl.origin}${pathParts.join('/')}/`;
+            return parsedUrl.origin + pathParts.join('/') + '/';
         } catch (e) {
             const lastSlashIndex = urlStr.lastIndexOf('/');
             return lastSlashIndex > urlStr.indexOf('://') + 2 ? urlStr.substring(0, lastSlashIndex + 1) : urlStr + '/';
@@ -169,14 +172,14 @@ export async function onRequest(context) {
         } catch (e) {
             if (relativeUrl.startsWith('/')) {
                 const urlObj = new URL(baseUrl);
-                return `${urlObj.origin}${relativeUrl}`;
+                return urlObj.origin + relativeUrl;
             }
-            return `${baseUrl.replace(/\/[^/]*$/, '/')}${relativeUrl}`;
+            return baseUrl.replace(/\/[^/]*$/, '/') + relativeUrl;
         }
     }
 
     function rewriteUrlToProxy(targetUrl) {
-        return `/proxy/${encodeURIComponent(targetUrl)}`;
+        return '/proxy/' + encodeURIComponent(targetUrl);
     }
 
     async function fetchContentWithType(targetUrl) {
@@ -187,35 +190,38 @@ export async function onRequest(context) {
             'Referer': request.headers.get('Referer') || new URL(targetUrl).origin
         });
         try {
-            const response = await fetch(targetUrl, { headers, redirect: 'follow' });
+            const response = await fetch(targetUrl, { headers: headers, redirect: 'follow' });
             if (!response.ok) {
-                const errorBody = await response.text().catch(() => '');
-                throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+                throw new Error('HTTP error ' + response.status + ': ' + response.statusText);
             }
             const content = await response.text();
             const contentType = response.headers.get('Content-Type') || '';
-            return { content, contentType, responseHeaders: response.headers };
+            return { content: content, contentType: contentType, responseHeaders: response.headers };
         } catch (error) {
-            throw new Error(`请求目标URL失败 ${targetUrl}: ${error.message}`);
+            throw new Error('请求目标URL失败 ' + targetUrl + ': ' + error.message);
         }
     }
 
     function isM3u8Content(content, contentType) {
-        if (contentType && (contentType.includes('application/vnd.apple.mpegurl') || contentType.includes('application/x-mpegurl') || contentType.includes('audio/mpegurl'))) return true;
+        if (contentType && (
+            contentType.includes('application/vnd.apple.mpegurl') ||
+            contentType.includes('application/x-mpegurl') ||
+            contentType.includes('audio/mpegurl')
+        )) return true;
         return content && typeof content === 'string' && content.trim().startsWith('#EXTM3U');
     }
 
     function processKeyLine(line, baseUrl) {
-        return line.replace(/URI="([^"]+)"/, (match, uri) => {
+        return line.replace(/URI="([^"]+)"/, function(match, uri) {
             const absoluteUri = resolveUrl(baseUrl, uri);
-            return `URI="${rewriteUrlToProxy(absoluteUri)}"`;
+            return 'URI="' + rewriteUrlToProxy(absoluteUri) + '"';
         });
     }
 
     function processMapLine(line, baseUrl) {
-        return line.replace(/URI="([^"]+)"/, (match, uri) => {
+        return line.replace(/URI="([^"]+)"/, function(match, uri) {
             const absoluteUri = resolveUrl(baseUrl, uri);
-            return `URI="${rewriteUrlToProxy(absoluteUri)}"`;
+            return 'URI="' + rewriteUrlToProxy(absoluteUri) + '"';
         });
     }
 
@@ -231,8 +237,7 @@ export async function onRequest(context) {
             if (line.startsWith('#EXT-X-MAP')) { output.push(processMapLine(line, baseUrl)); continue; }
             if (line.startsWith('#EXTINF')) { output.push(line); continue; }
             if (!line.startsWith('#')) {
-                const absoluteUrl = resolveUrl(baseUrl, line);
-                output.push(rewriteUrlToProxy(absoluteUrl));
+                output.push(rewriteUrlToProxy(resolveUrl(baseUrl, line)));
                 continue;
             }
             output.push(line);
@@ -240,19 +245,21 @@ export async function onRequest(context) {
         return output.join('\n');
     }
 
-    async function processM3u8Content(targetUrl, content, recursionDepth = 0, env) {
+    async function processM3u8Content(targetUrl, content, recursionDepth, environment) {
+        recursionDepth = recursionDepth || 0;
         if (content.includes('#EXT-X-STREAM-INF') || content.includes('#EXT-X-MEDIA:')) {
-            return await processMasterPlaylist(targetUrl, content, recursionDepth, env);
+            return await processMasterPlaylist(targetUrl, content, recursionDepth, environment);
         }
         return processMediaPlaylist(targetUrl, content);
     }
 
-    async function processMasterPlaylist(url, content, recursionDepth, env) {
-        if (recursionDepth > MAX_RECURSION) throw new Error(`递归层数过多: ${url}`);
+    async function processMasterPlaylist(url, content, recursionDepth, environment) {
+        if (recursionDepth > MAX_RECURSION) throw new Error('递归层数过多: ' + url);
         const baseUrl = getBaseUrl(url);
         const lines = content.split('\n');
         let highestBandwidth = -1;
         let bestVariantUrl = '';
+
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
                 const bandwidthMatch = lines[i].match(/BANDWIDTH=(\d+)/);
@@ -260,3 +267,119 @@ export async function onRequest(context) {
                 let variantUriLine = '';
                 for (let j = i + 1; j < lines.length; j++) {
                     const line = lines[j].trim();
+                    if (line && !line.startsWith('#')) { variantUriLine = line; i = j; break; }
+                }
+                if (variantUriLine && currentBandwidth >= highestBandwidth) {
+                    highestBandwidth = currentBandwidth;
+                    bestVariantUrl = resolveUrl(baseUrl, variantUriLine);
+                }
+            }
+        }
+
+        if (!bestVariantUrl) {
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (line && !line.startsWith('#') && (line.endsWith('.m3u8') || line.includes('.m3u8?'))) {
+                    bestVariantUrl = resolveUrl(baseUrl, line);
+                    break;
+                }
+            }
+        }
+
+        if (!bestVariantUrl) return processMediaPlaylist(url, content);
+
+        let kvNamespace = null;
+        try {
+            kvNamespace = environment.LIBRETV_PROXY_KV;
+            if (!kvNamespace) throw new Error("KV未绑定");
+        } catch (e) { kvNamespace = null; }
+
+        const cacheKey = 'm3u8_processed:' + bestVariantUrl;
+        if (kvNamespace) {
+            try {
+                const cachedContent = await kvNamespace.get(cacheKey);
+                if (cachedContent) return cachedContent;
+            } catch (e) {}
+        }
+
+        const fetched = await fetchContentWithType(bestVariantUrl);
+        if (!isM3u8Content(fetched.content, fetched.contentType)) {
+            return processMediaPlaylist(bestVariantUrl, fetched.content);
+        }
+
+        const processedVariant = await processM3u8Content(bestVariantUrl, fetched.content, recursionDepth + 1, environment);
+
+        if (kvNamespace) {
+            try {
+                waitUntil(kvNamespace.put(cacheKey, processedVariant, { expirationTtl: CACHE_TTL }));
+            } catch (e) {}
+        }
+        return processedVariant;
+    }
+
+    // 主处理逻辑
+    try {
+        const targetUrl = getTargetUrlFromPath(url.pathname);
+        if (!targetUrl) return createResponse("无效的代理请求", 400);
+
+        let kvNamespace = null;
+        try {
+            kvNamespace = env.LIBRETV_PROXY_KV;
+            if (!kvNamespace) throw new Error("KV未绑定");
+        } catch (e) { kvNamespace = null; }
+
+        const cacheKey = 'proxy_raw:' + targetUrl;
+        if (kvNamespace) {
+            try {
+                const cachedDataJson = await kvNamespace.get(cacheKey);
+                if (cachedDataJson) {
+                    const cachedData = JSON.parse(cachedDataJson);
+                    const content = cachedData.body;
+                    let headers = {};
+                    try { headers = JSON.parse(cachedData.headers); } catch (e) {}
+                    const contentType = headers['content-type'] || '';
+                    if (isM3u8Content(content, contentType)) {
+                        return createM3u8Response(await processM3u8Content(targetUrl, content, 0, env));
+                    } else {
+                        return createResponse(content, 200, new Headers(headers));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        const fetched = await fetchContentWithType(targetUrl);
+
+        if (kvNamespace) {
+            try {
+                const headersToCache = {};
+                fetched.responseHeaders.forEach(function(value, key) { headersToCache[key.toLowerCase()] = value; });
+                waitUntil(kvNamespace.put(cacheKey, JSON.stringify({ body: fetched.content, headers: JSON.stringify(headersToCache) }), { expirationTtl: CACHE_TTL }));
+            } catch (e) {}
+        }
+
+        if (isM3u8Content(fetched.content, fetched.contentType)) {
+            return createM3u8Response(await processM3u8Content(targetUrl, fetched.content, 0, env));
+        } else {
+            const finalHeaders = new Headers(fetched.responseHeaders);
+            finalHeaders.set('Cache-Control', 'public, max-age=' + CACHE_TTL);
+            finalHeaders.set("Access-Control-Allow-Origin", "*");
+            finalHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+            finalHeaders.set("Access-Control-Allow-Headers", "*");
+            return createResponse(fetched.content, 200, finalHeaders);
+        }
+    } catch (error) {
+        return createResponse('代理处理错误: ' + error.message, 500);
+    }
+}
+
+export async function onRequestOptions(context) {
+    return new Response(null, {
+        status: 204,
+        headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+        },
+    });
+}
