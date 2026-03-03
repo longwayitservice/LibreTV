@@ -1,3 +1,47 @@
+export async function onRequest(context) {
+    const { request, env } = context;
+    const url = new URL(request.url);
+
+    // ✅ 豆瓣请求白名单放行（不需要鉴权）
+    const targetParam = url.searchParams.get("url");
+    if (targetParam) {
+        const DOUBAN_HOSTS = [
+            "movie.douban.com",
+            "img1.doubanio.com",
+            "img2.doubanio.com",
+            "img3.doubanio.com",
+            "img9.doubanio.com"
+        ];
+        try {
+            const targetHost = new URL(targetParam).hostname;
+            if (DOUBAN_HOSTS.includes(targetHost)) {
+                // 直接代理豆瓣请求，不鉴权
+                const response = await fetch(targetParam, {
+                    headers: {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                        "Referer": "https://movie.douban.com/",
+                        "Accept": "application/json, text/plain, */*",
+                        "Accept-Language": "zh-CN,zh;q=0.9",
+                    }
+                });
+                return new Response(response.body, {
+                    status: response.status,
+                    headers: {
+                        "Content-Type": response.headers.get("Content-Type") || "application/json",
+                        "Access-Control-Allow-Origin": "*",
+                        "Cache-Control": "public, max-age=300",
+                    }
+                });
+            }
+        } catch (e) {
+            return new Response("Invalid url", { status: 400 });
+        }
+    }
+
+    // 以下是原有的鉴权逻辑，保持不变...
+    const isValidAuth = await validateAuth(request, env);
+    // ... 原来的代码继续
+
 // functions/proxy/[[path]].js
 
 // --- 配置 (现在从 Cloudflare 环境变量读取) ---
