@@ -536,8 +536,7 @@ function renderDoubanCards(data, container) {
             // 2. 也准备代理URL作为备选
             //const proxiedCoverUrl = PROXY_URL + encodeURIComponent(originalCoverUrl);
 
-            const originalCoverUrl = item.cover;
-            
+            const originalCoverUrl = item.cover.replace(/^http:/, "https:");
             const proxiedCoverUrl = IMAGE_PROXY + encodeURIComponent(originalCoverUrl);
             
             // 为不同设备优化卡片布局
