@@ -1,29 +1,22 @@
 export async function onRequest(context) {
-  const { request } = context
-  const url = new URL(request.url)
+  const url = new URL(context.request.url)
   const target = url.searchParams.get("url")
 
   if (!target) {
     return new Response("Missing url", { status: 400 })
   }
 
-  const targetUrl = new URL(target)
-
-  if (!targetUrl.hostname.includes("doubanio.com")) {
-    return new Response("Forbidden", { status: 403 })
-  }
-
-  const fetchResponse = await fetch(target, {
+  const response = await fetch(target, {
     headers: {
-      Referer: "https://movie.douban.com/",
-      "User-Agent": "Mozilla/5.0"
+      "User-Agent": "Mozilla/5.0",
+      "Referer": "https://movie.douban.com/",
     }
   })
 
-  return new Response(fetchResponse.body, {
+  return new Response(response.body, {
     headers: {
-      "Content-Type": fetchResponse.headers.get("Content-Type"),
-      "Cache-Control": "public, max-age=604800"
+      "Content-Type": response.headers.get("Content-Type") || "image/jpeg",
+      "Access-Control-Allow-Origin": "*"
     }
   })
 }
