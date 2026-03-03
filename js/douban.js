@@ -382,29 +382,33 @@ function setupDoubanRefreshBtn() {
     };
 }
 
-function fetchDoubanTags() {
-    const movieTagsTarget = `https://movie.douban.com/j/search_tags?type=movie`
-    fetchDoubanData(movieTagsTarget)
-        .then(data => {
-            movieTags = data.tags;
-            if (doubanMovieTvCurrentSwitch === 'movie') {
-                renderDoubanTags(movieTags);
-            }
-        })
-        .catch(error => {
-            console.error("获取豆瓣热门电影标签失败：", error);
+// 顶部常量（已有，确认一下）
+const IMAGE_PROXY = "/proxy?url=";
+// 豆瓣数据代理复用同一个代理端点
+const DOUBAN_PROXY = "/proxy?url=";
+
+async function fetchDoubanData(url) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const proxiedUrl = DOUBAN_PROXY + encodeURIComponent(url);
+
+    try {
+        const response = await fetch(proxiedUrl, {
+            signal: controller.signal,
         });
-    const tvTagsTarget = `https://movie.douban.com/j/search_tags?type=tv`
-    fetchDoubanData(tvTagsTarget)
-       .then(data => {
-            tvTags = data.tags;
-            if (doubanMovieTvCurrentSwitch === 'tv') {
-                renderDoubanTags(tvTags);
-            }
-        })
-       .catch(error => {
-            console.error("获取豆瓣热门电视剧标签失败：", error);
-        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        return await response.json();
+    } catch (err) {
+        clearTimeout(timeoutId);
+        console.error("豆瓣 API 请求失败：", err);
+        throw err;
+    }
 }
 
 // 渲染热门推荐内容
